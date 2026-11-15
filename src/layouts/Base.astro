@@ -1,5 +1,7 @@
 ---
 import { getRelativeLocaleUrl } from "astro:i18n";
+import "@fontsource-variable/bricolage-grotesque/opsz.css";
+import "@fontsource-variable/inter";
 
 interface Props {
   lang: "en" | "fr";
@@ -17,6 +19,14 @@ const otherLang = lang === "en" ? "fr" : "en";
     <title>Arnaud Jalbert</title>
     <link rel="alternate" hreflang="en" href={new URL(getRelativeLocaleUrl("en"), Astro.site)} />
     <link rel="alternate" hreflang="fr" href={new URL(getRelativeLocaleUrl("fr"), Astro.site)} />
+    <style is:global>
+      body {
+        font-family: "Inter Variable", sans-serif;
+      }
+      h1, h2, h3, h4, h5, h6 {
+        font-family: "Bricolage Grotesque Variable", sans-serif;
+      }
+    </style>
   </head>
   <body>
     <slot />
