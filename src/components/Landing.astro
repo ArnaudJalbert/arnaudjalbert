@@ -1,0 +1,201 @@
+---
+// The name over an endless zoom of colored shapes flowing from the top left corner.
+---
+
+<main>
+  <h1>Arnaud Jalbert</h1>
+  <canvas aria-hidden="true"></canvas>
+</main>
+
+<style>
+  main {
+    position: relative;
+    isolation: isolate;
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+
+  h1 {
+    margin: 0;
+    padding: 0 1rem;
+    font-size: clamp(3rem, 13vw, 12rem);
+    font-weight: 800;
+    line-height: 1;
+    text-align: center;
+    mix-blend-mode: difference;
+  }
+
+  canvas {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+
+<script>
+  // Shapes live in polar coordinates around an origin just past the top left corner.
+  // Every shape grows at the same exponential rate, so the scene zooms forever toward
+  // the bottom right while new tiny shapes keep spawning at the origin.
+  const COLORS = ["#ff2d55", "#1f6bff", "#ffcc00", "#00d47e"];
+  const POLYGON_SIDES = [3, 5, 6];
+  const DOUBLING_SECONDS = 5;
+  const SPAWNS_PER_DOUBLING = 3;
+  const SPAWN_DISTANCE = 2;
+  const GROWTH = Math.LN2 / DOUBLING_SECONDS;
+  const FRAME_MS = 1000 / 30;
+  const GRAIN_TILE = 128;
+  const GRAIN_STRENGTH = 24;
+
+  type Level = { sides: number; color: string; rotation: number }; // sides 0 is a circle
+  type Shape = { angle: number; distance: number; radius: number; spin: number; levels: Level[] };
+
+  const canvas = document.querySelector<HTMLCanvasElement>("main canvas")!;
+  const context = canvas.getContext("2d")!;
+  const origin = { x: 0, y: 0 };
+  let width = 0;
+  let height = 0;
+
+  const randomBetween = (min: number, max: number) => min + Math.random() * (max - min);
+  const pick = <T,>(items: T[]) => items[Math.floor(Math.random() * items.length)];
+  const farthest = () => Math.hypot(width, height) * 1.3;
+
+  const resize = () => {
+    width = canvas.clientWidth;
+    height = canvas.clientHeight;
+    canvas.width = width * devicePixelRatio;
+    canvas.height = height * devicePixelRatio;
+    context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    origin.x = -0.05 * width;
+    origin.y = -0.05 * height;
+  };
+
+  // Each color is a small tile with faint grain baked in, so grain costs nothing per frame.
+  const createGrainFill = (color: string) => {
+    const tile = document.createElement("canvas");
+    tile.width = tile.height = GRAIN_TILE;
+    const tileContext = tile.getContext("2d")!;
+    tileContext.fillStyle = color;
+    tileContext.fillRect(0, 0, GRAIN_TILE, GRAIN_TILE);
+    const pixels = tileContext.getImageData(0, 0, GRAIN_TILE, GRAIN_TILE);
+    for (let i = 0; i < pixels.data.length; i += 4) {
+      const shift = (Math.random() - 0.5) * GRAIN_STRENGTH;
+      for (let channel = 0; channel < 3; channel++) pixels.data[i + channel] += shift;
+    }
+    tileContext.putImageData(pixels, 0, 0);
+    return context.createPattern(tile, "repeat")!;
+  };
+  const fills = new Map(COLORS.map((color) => [color, createGrainFill(color)]));
+
+  // Fewer shapes along the diagonal that runs through the name, so it stays readable.
+  const randomAngle = () => {
+    const diagonal = Math.atan2(height, width);
+    let angle: number;
+    do {
+      angle = randomBetween(0.05, Math.PI / 2 - 0.05);
+    } while (Math.abs(angle - diagonal) < 0.25 && Math.random() < 0.85);
+    return angle;
+  };
+
+  // Alternates circles and polygons, each level a different color from its parent.
+  const randomLevels = () => {
+    const levels: Level[] = [];
+    let isCircle = Math.random() < 0.5;
+    let color = "";
+    for (let depth = 1 + Math.floor(Math.random() * 3); depth > 0; depth--) {
+      color = pick(COLORS.filter((candidate) => candidate !== color));
+      levels.push({
+        sides: isCircle ? 0 : pick(POLYGON_SIDES),
+        color,
+        rotation: randomBetween(0, Math.PI * 2),
+      });
+      isCircle = !isCircle;
+    }
+    return levels;
+  };
+
+  const spawn = (distance: number): Shape => ({
+    angle: randomAngle(),
+    distance,
+    radius: distance * randomBetween(0.1, 0.3),
+    spin: randomBetween(-0.4, 0.4),
+    levels: randomLevels(),
+  });
+
+  const drawLevel = (x: number, y: number, radius: number, level: Level) => {
+    context.fillStyle = fills.get(level.color)!;
+    context.beginPath();
+    if (level.sides === 0) {
+      context.arc(x, y, radius, 0, Math.PI * 2);
+    } else {
+      for (let corner = 0; corner < level.sides; corner++) {
+        const angle = level.rotation + (corner * Math.PI * 2) / level.sides;
+        context.lineTo(x + Math.cos(angle) * radius, y + Math.sin(angle) * radius);
+      }
+    }
+    context.fill();
+  };
+
+  // A circle holds a polygon with the same radius, a polygon holds its inscribed circle.
+  const drawShape = (shape: Shape) => {
+    const x = origin.x + Math.cos(shape.angle) * shape.distance;
+    const y = origin.y + Math.sin(shape.angle) * shape.distance;
+    let radius = shape.radius;
+    if (x + radius < 0 || y + radius < 0 || x - radius > width || y - radius > height) return;
+    for (const level of shape.levels) {
+      drawLevel(x, y, radius, level);
+      if (level.sides > 0) radius *= Math.cos(Math.PI / level.sides);
+    }
+  };
+
+  const render = (shapes: Shape[]) => {
+    context.clearRect(0, 0, width, height);
+    shapes.forEach(drawShape);
+  };
+
+  // Shapes stay sorted small to large so bigger, closer shapes paint on top.
+  const advance = (shapes: Shape[], seconds: number) => {
+    const growth = Math.exp(GROWTH * seconds);
+    for (const shape of shapes) {
+      shape.distance *= growth;
+      shape.radius *= growth;
+      shape.levels.forEach((level) => (level.rotation += shape.spin * seconds));
+    }
+    const remaining = shapes.filter((shape) => shape.distance - shape.radius < farthest());
+    if (Math.random() < (SPAWNS_PER_DOUBLING / DOUBLING_SECONDS) * seconds) {
+      remaining.unshift(spawn(SPAWN_DISTANCE));
+    }
+    return remaining;
+  };
+
+  // Starts mid-zoom: shapes spread evenly across every scale the screen can show.
+  const initialShapes = () => {
+    const octaves = Math.log2(farthest() / SPAWN_DISTANCE);
+    return Array.from({ length: Math.round(octaves * SPAWNS_PER_DOUBLING) }, () =>
+      spawn(SPAWN_DISTANCE * 2 ** (Math.random() * octaves)),
+    ).sort((a, b) => a.distance - b.distance);
+  };
+
+  resize();
+  let shapes = initialShapes();
+  render(shapes);
+  addEventListener("resize", () => {
+    resize();
+    render(shapes);
+  });
+
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    let last = performance.now();
+    const frame = (now: number) => {
+      requestAnimationFrame(frame);
+      if (now - last < FRAME_MS) return;
+      shapes = advance(shapes, Math.min((now - last) / 1000, 0.1));
+      last = now;
+      render(shapes);
+    };
+    requestAnimationFrame(frame);
+  }
+</script>
