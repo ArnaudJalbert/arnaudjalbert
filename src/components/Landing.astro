@@ -49,13 +49,28 @@
   const FRAME_MS = 1000 / 30;
   const GRAIN_TILE = 128;
   const GRAIN_STRENGTH = 24;
+  const MAX_SPEED_BOOST = 5;
+  const CLICK_REACH = 0.3; // share of the screen diagonal
+  const CLICK_FORCE = 1500;
 
   type Level = { sides: number; color: string; rotation: number }; // sides 0 is a circle
-  type Shape = { angle: number; distance: number; radius: number; spin: number; levels: Level[] };
+  type Shape = {
+    angle: number;
+    distance: number;
+    radius: number;
+    spin: number;
+    levels: Level[];
+    offsetX: number;
+    offsetY: number;
+    velocityX: number;
+    velocityY: number;
+  };
 
   const canvas = document.querySelector<HTMLCanvasElement>("main canvas")!;
   const context = canvas.getContext("2d")!;
   const origin = { x: 0, y: 0 };
+  const pointer = { x: 0, y: 0, tracked: false, speed: 0 };
+  let speedBoost = 1;
   let width = 0;
   let height = 0;
 
@@ -123,6 +138,15 @@
     radius: distance * randomBetween(0.1, 0.3),
     spin: randomBetween(-0.4, 0.4),
     levels: randomLevels(),
+    offsetX: 0,
+    offsetY: 0,
+    velocityX: 0,
+    velocityY: 0,
+  });
+
+  const centerOf = (shape: Shape) => ({
+    x: origin.x + Math.cos(shape.angle) * shape.distance + shape.offsetX,
+    y: origin.y + Math.sin(shape.angle) * shape.distance + shape.offsetY,
   });
 
   const drawLevel = (x: number, y: number, radius: number, level: Level) => {
@@ -141,8 +165,7 @@
 
   // A circle holds a polygon with the same radius, a polygon holds its inscribed circle.
   const drawShape = (shape: Shape) => {
-    const x = origin.x + Math.cos(shape.angle) * shape.distance;
-    const y = origin.y + Math.sin(shape.angle) * shape.distance;
+    const { x, y } = centerOf(shape);
     let radius = shape.radius;
     if (x + radius < 0 || y + radius < 0 || x - radius > width || y - radius > height) return;
     for (const level of shape.levels) {
@@ -156,16 +179,46 @@
     shapes.forEach(drawShape);
   };
 
+  // A click flings nearby shapes away from it. They keep their new path.
+  const pushAway = (shapes: Shape[], clickX: number, clickY: number) => {
+    const reach = Math.hypot(width, height) * CLICK_REACH;
+    for (const shape of shapes) {
+      const { x, y } = centerOf(shape);
+      const distance = Math.hypot(x - clickX, y - clickY) || 1;
+      if (distance > reach + shape.radius) continue;
+      const force = (1 - distance / (reach + shape.radius)) * CLICK_FORCE;
+      shape.velocityX += ((x - clickX) / distance) * force;
+      shape.velocityY += ((y - clickY) / distance) * force;
+    }
+  };
+
+  // Moving the cursor speeds the zoom up. It eases back down once the cursor rests.
+  const updateSpeedBoost = (seconds: number) => {
+    const target = 1 + Math.min(pointer.speed / 300, MAX_SPEED_BOOST);
+    speedBoost += (target - speedBoost) * Math.min(1, seconds * 2);
+    pointer.speed *= Math.exp(-4 * seconds);
+  };
+
   // Shapes stay sorted small to large so bigger, closer shapes paint on top.
   const advance = (shapes: Shape[], seconds: number) => {
-    const growth = Math.exp(GROWTH * seconds);
+    updateSpeedBoost(seconds);
+    const zoomSeconds = seconds * speedBoost;
+    const growth = Math.exp(GROWTH * zoomSeconds);
+    const drag = Math.exp(-3 * seconds);
     for (const shape of shapes) {
       shape.distance *= growth;
       shape.radius *= growth;
       shape.levels.forEach((level) => (level.rotation += shape.spin * seconds));
+      shape.offsetX += shape.velocityX * seconds;
+      shape.offsetY += shape.velocityY * seconds;
+      shape.velocityX *= drag;
+      shape.velocityY *= drag;
     }
-    const remaining = shapes.filter((shape) => shape.distance - shape.radius < farthest());
-    if (Math.random() < (SPAWNS_PER_DOUBLING / DOUBLING_SECONDS) * seconds) {
+    const remaining = shapes.filter((shape) => {
+      const { x, y } = centerOf(shape);
+      return Math.hypot(x - origin.x, y - origin.y) - shape.radius < farthest();
+    });
+    if (Math.random() < (SPAWNS_PER_DOUBLING / DOUBLING_SECONDS) * zoomSeconds) {
       remaining.unshift(spawn(SPAWN_DISTANCE));
     }
     return remaining;
@@ -188,6 +241,19 @@
   });
 
   if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    let lastMove = performance.now();
+    addEventListener("pointermove", (event) => {
+      const now = performance.now();
+      if (pointer.tracked) {
+        const moved = Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y);
+        const elapsed = Math.max((now - lastMove) / 1000, 0.008);
+        pointer.speed = Math.max(pointer.speed, moved / elapsed);
+      }
+      Object.assign(pointer, { x: event.clientX, y: event.clientY, tracked: true });
+      lastMove = now;
+    });
+    addEventListener("pointerdown", (event) => pushAway(shapes, event.clientX, event.clientY));
+
     let last = performance.now();
     const frame = (now: number) => {
       requestAnimationFrame(frame);
