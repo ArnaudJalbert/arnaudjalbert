@@ -1,10 +1,14 @@
 ---
-// The name over a black field of white Truchet lines drifting from the top left corner.
+// The name over a field of drifting Truchet tiles, inverting whatever it crosses, with a gray
+// halo around the letters. The animation lives in src/scripts/truchet: field.ts runs it, and
+// each tile style has its own file.
 ---
 
 <main>
-  <h1>Arnaud Jalbert</h1>
   <canvas aria-hidden="true"></canvas>
+  <div class="halo" aria-hidden="true"><span class="name">Arnaud Jalbert</span></div>
+  <h1 class="name">Arnaud Jalbert</h1>
+  <div class="grain" aria-hidden="true"></div>
 </main>
 
 <style>
@@ -17,14 +21,43 @@
     overflow: hidden;
   }
 
-  h1 {
+  /* The heading and its halo copy share every metric, so their letters line up exactly. */
+  .name {
     margin: 0;
     padding: 0 1rem;
+    font-family: "Bricolage Grotesque Variable", sans-serif;
     font-size: clamp(3rem, 13vw, 12rem);
     font-weight: 800;
     line-height: 1;
     text-align: center;
+  }
+
+  /* The name inverts the tiles and halo beneath it: white over black, black over white. */
+  h1 {
+    position: relative;
+    z-index: 1;
+    color: #fff;
     mix-blend-mode: difference;
+  }
+
+  /* A light gray glow around the letters, with the letters cut out by a mask so the tiles
+     still show through them. Mid gray keeps both the white and the black parts readable. */
+  .halo {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+    mask-size: 100% 100%;
+  }
+
+  /* On the name copy itself, so em sizes scale with the name. */
+  .halo .name {
+    color: transparent;
+    text-shadow:
+      0 0 0.06em rgb(128 128 128 / 0.7),
+      0 0 0.16em rgb(128 128 128 / 0.6),
+      0 0 0.35em rgb(128 128 128 / 0.4);
   }
 
   canvas {
@@ -34,174 +67,47 @@
     width: 100%;
     height: 100%;
   }
+
+  /* Film grain over everything: a noise layer larger than the screen, jumped around about
+     12 times a second. Only its position changes, so the GPU moves it without repainting. */
+  .grain {
+    position: absolute;
+    inset: -50%;
+    z-index: 2;
+    pointer-events: none;
+    background-size: 512px;
+    will-change: transform;
+    animation: grain 0.8s steps(1) infinite;
+  }
+
+  /* Shifts are a share of the layer, which is twice the screen, so 20% keeps it covering. */
+  @keyframes grain {
+    0% { transform: translate(0, 0); }
+    10% { transform: translate(-3%, -6%); }
+    20% { transform: translate(-9%, 3%); }
+    30% { transform: translate(4%, -14%); }
+    40% { transform: translate(-3%, 14%); }
+    50% { transform: translate(-9%, 6%); }
+    60% { transform: translate(9%, 0); }
+    70% { transform: translate(0, 9%); }
+    80% { transform: translate(2%, 20%); }
+    90% { transform: translate(-6%, 6%); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .grain {
+      animation: none;
+    }
+  }
 </style>
 
 <script>
-  // A grid of tiles slides diagonally. Each tile holds two thick quarter arcs joining edge
-  // midpoints, in one of two orientations, so the arcs link into endless winding lines.
-  // Every so often a random tile turns a quarter turn into its other orientation.
-  const DRIFT_SPEED = 18; // px per second, along the diagonal
-  const FLIP_INTERVAL = 0.12; // seconds between flips
-  const FLIP_SECONDS = 0.9;
-  const FRAME_MS = 1000 / 24;
-  const GRAIN_TILE = 128;
-  const GRAIN_STRENGTH = 24;
+  import { startTruchetField } from "../scripts/truchet/field";
+  import { paintGrain } from "../scripts/truchet/grain";
+  import { maskOutText } from "../scripts/truchet/text-mask";
 
-  type Tile = { orientation: number; flipStart: number }; // orientation 0 or 1
-
-  const canvas = document.querySelector<HTMLCanvasElement>("main canvas")!;
-  const context = canvas.getContext("2d")!;
-  const tiles = new Map<string, Tile>();
-  let size = 0;
-  let width = 0;
-  let height = 0;
-  let offset = 0;
-  let elapsed = 0;
-  let sinceFlip = 0;
-
-  const resize = () => {
-    width = canvas.clientWidth;
-    height = canvas.clientHeight;
-    canvas.width = width * devicePixelRatio;
-    canvas.height = height * devicePixelRatio;
-    context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-    // Whole device pixels, so tile edges never fall between pixels and shimmer.
-    size = Math.round(Math.max(48, Math.min(width, height) / 9) * devicePixelRatio) / devicePixelRatio;
-  };
-
-  const snap = (value: number) => Math.round(value * devicePixelRatio) / devicePixelRatio;
-
-  // Black and white with faint grain baked in, so grain costs nothing per frame.
-  const createGrainFill = (color: string, direction: number) => {
-    const tile = document.createElement("canvas");
-    tile.width = tile.height = GRAIN_TILE;
-    const tileContext = tile.getContext("2d")!;
-    tileContext.fillStyle = color;
-    tileContext.fillRect(0, 0, GRAIN_TILE, GRAIN_TILE);
-    const pixels = tileContext.getImageData(0, 0, GRAIN_TILE, GRAIN_TILE);
-    for (let i = 0; i < pixels.data.length; i += 4) {
-      const shift = Math.random() * GRAIN_STRENGTH * direction;
-      for (let channel = 0; channel < 3; channel++) pixels.data[i + channel] += shift;
-    }
-    tileContext.putImageData(pixels, 0, 0);
-    return context.createPattern(tile, "repeat")!;
-  };
-  const black = createGrainFill("#000", 0.5);
-  const white = createGrainFill("#fff", -1);
-
-  const tileAt = (column: number, row: number) => {
-    const key = `${column},${row}`;
-    let tile = tiles.get(key);
-    if (!tile) {
-      tile = { orientation: Math.round(Math.random()), flipStart: -Infinity };
-      tiles.set(key, tile);
-    }
-    return tile;
-  };
-
-  const ease = (t: number) => t * t * (3 - 2 * t);
-  const flipProgress = (tile: Tile) => Math.min(1, (elapsed - tile.flipStart) / FLIP_SECONDS);
-
-  // Orientation 0 links the top and left edge midpoints, and the bottom and right ones.
-  // Orientation 1 links top with right and bottom with left. Each link is a quarter arc
-  // around the corner between its two midpoints.
-  const CORNERS = [
-    [
-      [-1, -1],
-      [1, 1],
-    ],
-    [
-      [1, -1],
-      [-1, 1],
-    ],
-  ];
-  const ARC_MIDPOINT = 1 - Math.SQRT1_2; // where the arc crosses the diagonal, as a share of half
-  const ARC_HANDLE = Math.SQRT2 - 1; // tan(22.5deg): quadratic handles that trace an eighth circle
-
-  // Each link is drawn as two quadratic curves meeting on the diagonal. Pinch 0 traces the
-  // quarter arc. Pinch 1 pulls the meeting point to the tile center and straightens both
-  // halves, so both orientations become the same plus sign. A flip pinches in, swaps the
-  // orientation, and opens out, and the ends never leave the edge midpoints.
-  const addLinks = (path: Path2D, centerX: number, centerY: number, orientation: number, pinch: number) => {
-    const half = size / 2;
-    const meet = ARC_MIDPOINT * half * (1 - pinch);
-    const handle = half - (ARC_HANDLE + (1 - ARC_HANDLE) * pinch) * half;
-    for (const [signX, signY] of CORNERS[orientation]) {
-      path.moveTo(centerX, centerY + signY * half);
-      path.quadraticCurveTo(centerX, centerY + signY * handle, centerX + signX * meet, centerY + signY * meet);
-      path.quadraticCurveTo(centerX + signX * handle, centerY, centerX + signX * half, centerY);
-    }
-  };
-
-  // Every tile goes into one path and one stroke, so lines join across tile edges without seams.
-  const render = () => {
-    context.fillStyle = black;
-    context.fillRect(0, 0, width, height);
-    const shift = snap(offset % size);
-    const first = -Math.floor(offset / size) - 1;
-    const path = new Path2D();
-    for (let row = 0; row * size - size < height + size; row++) {
-      for (let column = 0; column * size - size < width + size; column++) {
-        const centerX = column * size - size + shift + size / 2;
-        const centerY = row * size - size + shift + size / 2;
-        const tile = tileAt(first + column, first + row);
-        const t = ease(flipProgress(tile));
-        if (t < 0.5) addLinks(path, centerX, centerY, 1 - tile.orientation, t * 2);
-        else addLinks(path, centerX, centerY, tile.orientation, (1 - t) * 2);
-      }
-    }
-    context.strokeStyle = white;
-    context.lineWidth = size / 3;
-    context.lineJoin = "round";
-    context.stroke(path);
-  };
-
-  const flipRandomTile = () => {
-    const first = -Math.floor(offset / size) - 1;
-    const column = first + Math.floor(Math.random() * (width / size + 2));
-    const row = first + Math.floor(Math.random() * (height / size + 2));
-    const tile = tileAt(column, row);
-    if (flipProgress(tile) < 1) return;
-    tile.orientation = 1 - tile.orientation;
-    tile.flipStart = elapsed;
-  };
-
-  // Forget tiles that slid off the bottom right.
-  const forgetHiddenTiles = () => {
-    const first = -Math.floor(offset / size) - 1;
-    for (const key of tiles.keys()) {
-      const [column, row] = key.split(",").map(Number);
-      if (column > first + width / size + 4 || row > first + height / size + 4) tiles.delete(key);
-    }
-  };
-
-  const advance = (seconds: number) => {
-    elapsed += seconds;
-    offset += (DRIFT_SPEED / Math.SQRT2) * seconds;
-    sinceFlip += seconds;
-    while (sinceFlip > FLIP_INTERVAL) {
-      sinceFlip -= FLIP_INTERVAL;
-      flipRandomTile();
-    }
-    if (tiles.size > 4000) forgetHiddenTiles();
-  };
-
-  resize();
-  render();
-  addEventListener("resize", () => {
-    resize();
-    render();
-  });
-
-  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    let last = performance.now();
-    const frame = (now: number) => {
-      requestAnimationFrame(frame);
-      if (now - last < FRAME_MS) return;
-      advance(Math.min((now - last) / 1000, 0.1));
-      last = now;
-      render();
-    };
-    requestAnimationFrame(frame);
-  }
+  const name = document.querySelector("main h1")!;
+  paintGrain(document.querySelector<HTMLElement>("main .grain")!);
+  maskOutText(document.querySelector<HTMLElement>("main .halo")!, name);
+  startTruchetField(document.querySelector<HTMLCanvasElement>("main canvas")!);
 </script>
