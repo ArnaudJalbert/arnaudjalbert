@@ -1,5 +1,5 @@
 ---
-// The name over an endless zoom of colored shapes flowing from the top left corner.
+// The name over an endless zoom of animated fractals flowing from the top left corner.
 ---
 
 <main>
@@ -41,6 +41,7 @@
   // Every shape grows at the same exponential rate, so the scene zooms forever toward
   // the bottom right while new tiny shapes keep spawning at the origin.
   const COLORS = ["#ff2d55", "#1f6bff", "#ffcc00", "#00d47e"];
+  const FRACTALS = ["sierpinski", "orbits", "whirl"] as const;
   const POLYGON_SIDES = [3, 5, 6];
   const DOUBLING_SECONDS = 5;
   const SPAWNS_PER_DOUBLING = 3;
@@ -52,14 +53,22 @@
   const MAX_SPEED_BOOST = 5;
   const CLICK_REACH = 0.3; // share of the screen diagonal
   const CLICK_FORCE = 1500;
+  // Fractals only recurse while their pieces stay bigger than this, so distant shapes are cheap.
+  const MIN_DETAIL = 4;
+  const MAX_DEPTH = 5;
 
-  type Level = { sides: number; color: string; rotation: number }; // sides 0 is a circle
+  type Point = { x: number; y: number };
   type Shape = {
+    fractal: (typeof FRACTALS)[number];
     angle: number;
     distance: number;
     radius: number;
+    rotation: number;
     spin: number;
-    levels: Level[];
+    palette: string[];
+    sides: number;
+    branches: number;
+    phase: number;
     offsetX: number;
     offsetY: number;
     velocityX: number;
@@ -71,11 +80,12 @@
   const origin = { x: 0, y: 0 };
   const pointer = { x: 0, y: 0, tracked: false, speed: 0 };
   let speedBoost = 1;
+  let elapsed = 0;
   let width = 0;
   let height = 0;
 
   const randomBetween = (min: number, max: number) => min + Math.random() * (max - min);
-  const pick = <T,>(items: T[]) => items[Math.floor(Math.random() * items.length)];
+  const pick = <T,>(items: readonly T[]) => items[Math.floor(Math.random() * items.length)];
   const farthest = () => Math.hypot(width, height) * 1.3;
 
   const resize = () => {
@@ -115,29 +125,17 @@
     return angle;
   };
 
-  // Alternates circles and polygons, each level a different color from its parent.
-  const randomLevels = () => {
-    const levels: Level[] = [];
-    let isCircle = Math.random() < 0.5;
-    let color = "";
-    for (let depth = 1 + Math.floor(Math.random() * 3); depth > 0; depth--) {
-      color = pick(COLORS.filter((candidate) => candidate !== color));
-      levels.push({
-        sides: isCircle ? 0 : pick(POLYGON_SIDES),
-        color,
-        rotation: randomBetween(0, Math.PI * 2),
-      });
-      isCircle = !isCircle;
-    }
-    return levels;
-  };
-
   const spawn = (distance: number): Shape => ({
+    fractal: pick(FRACTALS),
     angle: randomAngle(),
     distance,
     radius: distance * randomBetween(0.1, 0.3),
+    rotation: randomBetween(0, Math.PI * 2),
     spin: randomBetween(-0.4, 0.4),
-    levels: randomLevels(),
+    palette: [...COLORS].sort(() => Math.random() - 0.5).slice(0, 3),
+    sides: pick(POLYGON_SIDES),
+    branches: 3 + Math.floor(Math.random() * 3),
+    phase: randomBetween(0, Math.PI * 2),
     offsetX: 0,
     offsetY: 0,
     velocityX: 0,
@@ -149,29 +147,84 @@
     y: origin.y + Math.sin(shape.angle) * shape.distance + shape.offsetY,
   });
 
-  const drawLevel = (x: number, y: number, radius: number, level: Level) => {
-    context.fillStyle = fills.get(level.color)!;
-    context.beginPath();
-    if (level.sides === 0) {
-      context.arc(x, y, radius, 0, Math.PI * 2);
-    } else {
-      for (let corner = 0; corner < level.sides; corner++) {
-        const angle = level.rotation + (corner * Math.PI * 2) / level.sides;
-        context.lineTo(x + Math.cos(angle) * radius, y + Math.sin(angle) * radius);
-      }
-    }
-    context.fill();
+  const polygonCorners = (x: number, y: number, radius: number, sides: number, rotation: number) =>
+    Array.from({ length: sides }, (_, corner) => {
+      const angle = rotation + (corner * Math.PI * 2) / sides;
+      return { x: x + Math.cos(angle) * radius, y: y + Math.sin(angle) * radius };
+    });
+
+  const addPolygon = (path: Path2D, corners: Point[]) => {
+    path.moveTo(corners[0].x, corners[0].y);
+    corners.slice(1).forEach((corner) => path.lineTo(corner.x, corner.y));
+    path.closePath();
   };
 
-  // A circle holds a polygon with the same radius, a polygon holds its inscribed circle.
+  // One path per depth, filled in order so deeper levels paint over their parents.
+  const fillPaths = (paths: Path2D[], palette: string[]) =>
+    paths.forEach((path, depth) => {
+      context.fillStyle = fills.get(palette[depth % palette.length])!;
+      context.fill(path);
+    });
+
+  // Each triangle splits into three corner triangles. Their scale breathes, opening the gaps.
+  const drawSierpinski = (x: number, y: number, radius: number, shape: Shape) => {
+    const scale = 0.46 + 0.04 * Math.sin(elapsed * 1.2 + shape.phase);
+    let depth = 0;
+    while (depth < MAX_DEPTH && radius * scale ** (depth + 1) > MIN_DETAIL) depth++;
+    const path = new Path2D();
+    const split = (cx: number, cy: number, r: number, level: number) => {
+      const corners = polygonCorners(cx, cy, r, 3, shape.rotation);
+      if (level === 0) return addPolygon(path, corners);
+      for (const corner of corners) {
+        split(corner.x + (cx - corner.x) * scale, corner.y + (cy - corner.y) * scale, r * scale, level - 1);
+      }
+    };
+    split(x, y, radius, depth);
+    fillPaths([path], shape.palette);
+  };
+
+  // A circle holds a ring of touching circles, each holding its own ring. Levels counter-rotate.
+  const drawOrbits = (x: number, y: number, radius: number, shape: Shape) => {
+    const gap = Math.sin(Math.PI / shape.branches);
+    const childScale = gap / (1 + gap);
+    const paths: Path2D[] = [];
+    const ring = (cx: number, cy: number, r: number, level: number) => {
+      (paths[level] ??= new Path2D()).moveTo(cx + r, cy);
+      paths[level].arc(cx, cy, r, 0, Math.PI * 2);
+      const child = r * childScale;
+      if (child < MIN_DETAIL || level >= 3) return;
+      const turn = shape.rotation * (level % 2 === 0 ? 1 : -1.5);
+      for (let i = 0; i < shape.branches; i++) {
+        const angle = turn + (i * Math.PI * 2) / shape.branches;
+        ring(cx + Math.cos(angle) * (r - child), cy + Math.sin(angle) * (r - child), child, level + 1);
+      }
+    };
+    ring(x, y, radius, 0);
+    fillPaths(paths, shape.palette);
+  };
+
+  // Each polygon's corners sit partway along its parent's edges. The cut sways, so it whirls.
+  const drawWhirl = (x: number, y: number, radius: number, shape: Shape) => {
+    const cut = 0.15 + 0.1 * Math.sin(elapsed * 0.8 + shape.phase);
+    let corners = polygonCorners(x, y, radius, shape.sides, shape.rotation);
+    const paths: Path2D[] = [];
+    for (let level = 0; level < 16 && Math.hypot(corners[0].x - x, corners[0].y - y) > MIN_DETAIL; level++) {
+      addPolygon((paths[level] = new Path2D()), corners);
+      corners = corners.map((corner, i) => {
+        const next = corners[(i + 1) % corners.length];
+        return { x: corner.x + (next.x - corner.x) * cut, y: corner.y + (next.y - corner.y) * cut };
+      });
+    }
+    fillPaths(paths, shape.palette);
+  };
+
+  const drawFractal = { sierpinski: drawSierpinski, orbits: drawOrbits, whirl: drawWhirl };
+
   const drawShape = (shape: Shape) => {
     const { x, y } = centerOf(shape);
-    let radius = shape.radius;
+    const radius = shape.radius;
     if (x + radius < 0 || y + radius < 0 || x - radius > width || y - radius > height) return;
-    for (const level of shape.levels) {
-      drawLevel(x, y, radius, level);
-      if (level.sides > 0) radius *= Math.cos(Math.PI / level.sides);
-    }
+    drawFractal[shape.fractal](x, y, radius, shape);
   };
 
   const render = (shapes: Shape[]) => {
@@ -202,13 +255,14 @@
   // Shapes stay sorted small to large so bigger, closer shapes paint on top.
   const advance = (shapes: Shape[], seconds: number) => {
     updateSpeedBoost(seconds);
+    elapsed += seconds;
     const zoomSeconds = seconds * speedBoost;
     const growth = Math.exp(GROWTH * zoomSeconds);
     const drag = Math.exp(-3 * seconds);
     for (const shape of shapes) {
       shape.distance *= growth;
       shape.radius *= growth;
-      shape.levels.forEach((level) => (level.rotation += shape.spin * seconds));
+      shape.rotation += shape.spin * seconds;
       shape.offsetX += shape.velocityX * seconds;
       shape.offsetY += shape.velocityY * seconds;
       shape.velocityX *= drag;
@@ -246,8 +300,8 @@
       const now = performance.now();
       if (pointer.tracked) {
         const moved = Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y);
-        const elapsed = Math.max((now - lastMove) / 1000, 0.008);
-        pointer.speed = Math.max(pointer.speed, moved / elapsed);
+        const elapsedMove = Math.max((now - lastMove) / 1000, 0.008);
+        pointer.speed = Math.max(pointer.speed, moved / elapsedMove);
       }
       Object.assign(pointer, { x: event.clientX, y: event.clientY, tracked: true });
       lastMove = now;
