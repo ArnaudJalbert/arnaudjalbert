@@ -1,0 +1,113 @@
+---
+// The name over a field of drifting Truchet tiles, inverting whatever it crosses, with a gray
+// halo around the letters. The animation lives in src/scripts/truchet: field.ts runs it, and
+// each tile style has its own file.
+---
+
+<main>
+  <canvas aria-hidden="true"></canvas>
+  <div class="halo" aria-hidden="true"><span class="name">Arnaud Jalbert</span></div>
+  <h1 class="name">Arnaud Jalbert</h1>
+  <div class="grain" aria-hidden="true"></div>
+</main>
+
+<style>
+  main {
+    position: relative;
+    isolation: isolate;
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+
+  /* The heading and its halo copy share every metric, so their letters line up exactly. */
+  .name {
+    margin: 0;
+    padding: 0 1rem;
+    font-family: "Bricolage Grotesque Variable", sans-serif;
+    font-size: clamp(3rem, 13vw, 12rem);
+    font-weight: 800;
+    line-height: 1;
+    text-align: center;
+  }
+
+  /* The name inverts the tiles and halo beneath it: white over black, black over white. */
+  h1 {
+    position: relative;
+    z-index: 1;
+    color: #fff;
+    mix-blend-mode: difference;
+  }
+
+  /* A light gray glow around the letters, with the letters cut out by a mask so the tiles
+     still show through them. Mid gray keeps both the white and the black parts readable. */
+  .halo {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+    mask-size: 100% 100%;
+  }
+
+  /* On the name copy itself, so em sizes scale with the name. */
+  .halo .name {
+    color: transparent;
+    text-shadow:
+      0 0 0.06em rgb(128 128 128 / 0.7),
+      0 0 0.16em rgb(128 128 128 / 0.6),
+      0 0 0.35em rgb(128 128 128 / 0.4);
+  }
+
+  canvas {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Film grain over everything: a noise layer larger than the screen, jumped around about
+     12 times a second. Only its position changes, so the GPU moves it without repainting. */
+  .grain {
+    position: absolute;
+    inset: -50%;
+    z-index: 2;
+    pointer-events: none;
+    background-size: 512px;
+    will-change: transform;
+    animation: grain 0.8s steps(1) infinite;
+  }
+
+  /* Shifts are a share of the layer, which is twice the screen, so 20% keeps it covering. */
+  @keyframes grain {
+    0% { transform: translate(0, 0); }
+    10% { transform: translate(-3%, -6%); }
+    20% { transform: translate(-9%, 3%); }
+    30% { transform: translate(4%, -14%); }
+    40% { transform: translate(-3%, 14%); }
+    50% { transform: translate(-9%, 6%); }
+    60% { transform: translate(9%, 0); }
+    70% { transform: translate(0, 9%); }
+    80% { transform: translate(2%, 20%); }
+    90% { transform: translate(-6%, 6%); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .grain {
+      animation: none;
+    }
+  }
+</style>
+
+<script>
+  import { startTruchetField } from "../scripts/truchet/field";
+  import { paintGrain } from "../scripts/truchet/grain";
+  import { maskOutText } from "../scripts/truchet/text-mask";
+
+  const name = document.querySelector("main h1")!;
+  paintGrain(document.querySelector<HTMLElement>("main .grain")!);
+  maskOutText(document.querySelector<HTMLElement>("main .halo")!, name);
+  startTruchetField(document.querySelector<HTMLCanvasElement>("main canvas")!);
+</script>
