@@ -1,17 +1,7 @@
-# arnaudjalbert
-
-Code source de mon site web personnel.
+# Arnaud Jalbert
 
 [English](README.md)
 
-## Développement
+Je m'appelle Arnaud, je suis développeur logiciel chez Folks VFX.
 
-Construit avec [Astro](https://astro.build). L'anglais est à `/en/`, le français à `/fr/`. `/` redirige vers `/en/`.
-
-```sh
-npm install
-npm run dev      # serveur local
-npm run build    # site statique dans dist/
-```
-
-Déployé sur Cloudflare Pages : commande de build `npm run build`, dossier de sortie `dist`.
+En ce moment, je développe [Marquise](https://marquise.mov), qui rassemble les projections de films de Montréal en un seul endroit. Son code source est sur [GitHub](https://github.com/ArnaudJalbert/marquise).
