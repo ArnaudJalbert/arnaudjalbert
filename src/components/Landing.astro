@@ -65,8 +65,11 @@
     canvas.width = width * devicePixelRatio;
     canvas.height = height * devicePixelRatio;
     context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-    size = Math.round(Math.max(48, Math.min(width, height) / 9));
+    // Whole device pixels, so tile edges never fall between pixels and shimmer.
+    size = Math.round(Math.max(48, Math.min(width, height) / 9) * devicePixelRatio) / devicePixelRatio;
   };
+
+  const snap = (value: number) => Math.round(value * devicePixelRatio) / devicePixelRatio;
 
   // Black and white with faint grain baked in, so grain costs nothing per frame.
   const createGrainFill = (color: string, direction: number) => {
@@ -99,68 +102,58 @@
   const ease = (t: number) => t * t * (3 - 2 * t);
   const flipProgress = (tile: Tile) => Math.min(1, (elapsed - tile.flipStart) / FLIP_SECONDS);
 
-  // Arcs around the top left and bottom right corners. A quarter turn gives the other orientation.
-  const addArcs = (path: Path2D, centerX: number, centerY: number, angle: number) => {
+  // Orientation 0 links the top and left edge midpoints, and the bottom and right ones.
+  // Orientation 1 links top with right and bottom with left. Each link is a quarter arc
+  // around the corner between its two midpoints.
+  const CORNERS = [
+    [
+      [-1, -1],
+      [1, 1],
+    ],
+    [
+      [1, -1],
+      [-1, 1],
+    ],
+  ];
+  const ARC_MIDPOINT = 1 - Math.SQRT1_2; // where the arc crosses the diagonal, as a share of half
+  const ARC_HANDLE = Math.SQRT2 - 1; // tan(22.5deg): quadratic handles that trace an eighth circle
+
+  // Each link is drawn as two quadratic curves meeting on the diagonal. Pinch 0 traces the
+  // quarter arc. Pinch 1 pulls the meeting point to the tile center and straightens both
+  // halves, so both orientations become the same plus sign. A flip pinches in, swaps the
+  // orientation, and opens out, and the ends never leave the edge midpoints.
+  const addLinks = (path: Path2D, centerX: number, centerY: number, orientation: number, pinch: number) => {
     const half = size / 2;
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    const point = (x: number, y: number) => ({
-      x: centerX + x * cos - y * sin,
-      y: centerY + x * sin + y * cos,
-    });
-    for (const [cornerX, cornerY, start] of [
-      [-half, -half, 0],
-      [half, half, Math.PI],
-    ]) {
-      const corner = point(cornerX, cornerY);
-      const from = point(cornerX + Math.cos(start) * half, cornerY + Math.sin(start) * half);
-      path.moveTo(from.x, from.y);
-      path.arc(corner.x, corner.y, half, start + angle, start + angle + Math.PI / 2);
+    const meet = ARC_MIDPOINT * half * (1 - pinch);
+    const handle = half - (ARC_HANDLE + (1 - ARC_HANDLE) * pinch) * half;
+    for (const [signX, signY] of CORNERS[orientation]) {
+      path.moveTo(centerX, centerY + signY * half);
+      path.quadraticCurveTo(centerX, centerY + signY * handle, centerX + signX * meet, centerY + signY * meet);
+      path.quadraticCurveTo(centerX + signX * handle, centerY, centerX + signX * half, centerY);
     }
   };
 
-  const strokeLines = (path: Path2D) => {
-    context.strokeStyle = white;
-    context.lineWidth = size / 3;
-    context.stroke(path);
-  };
-
-  // Resting tiles are stroked as one path, so lines join across tile edges without seams.
-  // Turning tiles are drawn on top, each clipped to its own square.
+  // Every tile goes into one path and one stroke, so lines join across tile edges without seams.
   const render = () => {
     context.fillStyle = black;
     context.fillRect(0, 0, width, height);
-    const shift = offset % size;
+    const shift = snap(offset % size);
     const first = -Math.floor(offset / size) - 1;
-    const resting = new Path2D();
-    const turning: { x: number; y: number; angle: number }[] = [];
+    const path = new Path2D();
     for (let row = 0; row * size - size < height + size; row++) {
       for (let column = 0; column * size - size < width + size; column++) {
         const centerX = column * size - size + shift + size / 2;
         const centerY = row * size - size + shift + size / 2;
         const tile = tileAt(first + column, first + row);
-        const progress = flipProgress(tile);
-        if (progress >= 1) {
-          addArcs(resting, centerX, centerY, (tile.orientation * Math.PI) / 2);
-        } else {
-          const angle = ((tile.orientation - 1 + ease(progress)) * Math.PI) / 2;
-          turning.push({ x: centerX, y: centerY, angle });
-        }
+        const t = ease(flipProgress(tile));
+        if (t < 0.5) addLinks(path, centerX, centerY, 1 - tile.orientation, t * 2);
+        else addLinks(path, centerX, centerY, tile.orientation, (1 - t) * 2);
       }
     }
-    strokeLines(resting);
-    for (const { x, y, angle } of turning) {
-      context.save();
-      context.beginPath();
-      context.rect(x - size / 2, y - size / 2, size, size);
-      context.clip();
-      context.fillStyle = black;
-      context.fillRect(x - size / 2, y - size / 2, size, size);
-      const path = new Path2D();
-      addArcs(path, x, y, angle);
-      strokeLines(path);
-      context.restore();
-    }
+    context.strokeStyle = white;
+    context.lineWidth = size / 3;
+    context.lineJoin = "round";
+    context.stroke(path);
   };
 
   const flipRandomTile = () => {
