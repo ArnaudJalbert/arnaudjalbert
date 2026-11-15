@@ -1,7 +1,12 @@
 // Cuts text out of an overlay: draws the text's glyphs, word by word where the page laid them
-// out, as holes in an otherwise opaque mask for `host`. Redrawn once the font has loaded
-// and whenever the window resizes, since both move the glyphs.
+// out, as holes in an otherwise opaque mask for `host`. Redrawn whenever a font finishes
+// loading and whenever the window resizes, since both move the glyphs.
 export const maskOutText = (host: HTMLElement, text: Element) => {
+  const font = () => {
+    const style = getComputedStyle(text);
+    return `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  };
+
   const draw = () => {
     const hostBox = host.getBoundingClientRect();
     const ratio = Math.min(devicePixelRatio, 2);
@@ -13,8 +18,7 @@ export const maskOutText = (host: HTMLElement, text: Element) => {
     context.fillRect(0, 0, hostBox.width, hostBox.height);
     context.globalCompositeOperation = "destination-out";
 
-    const style = getComputedStyle(text);
-    context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    context.font = font();
     context.textBaseline = "alphabetic";
     // A thin outline widens the holes past the glyphs' soft edges.
     context.lineWidth = 2;
@@ -34,6 +38,10 @@ export const maskOutText = (host: HTMLElement, text: Element) => {
     host.style.maskImage = `url(${mask.toDataURL()})`;
   };
 
-  document.fonts.ready.then(draw);
+  // `document.fonts.ready` can resolve before the web font is even requested, which drew
+  // the holes in the fallback font. Load the text's own font first, and redraw if any
+  // font lands later and reflows the text.
+  document.fonts.load(font()).then(draw, draw);
+  document.fonts.addEventListener("loadingdone", draw);
   addEventListener("resize", draw);
 };
