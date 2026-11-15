@@ -1,5 +1,5 @@
 ---
-// The name over an endless zoom of animated fractals flowing from the top left corner.
+// The name over a black field of white Truchet lines drifting from the top left corner.
 ---
 
 <main>
@@ -37,55 +37,27 @@
 </style>
 
 <script>
-  // Shapes live in polar coordinates around an origin just past the top left corner.
-  // Every shape grows at the same exponential rate, so the scene zooms forever toward
-  // the bottom right while new tiny shapes keep spawning at the origin.
-  const COLORS = ["#ff2d55", "#1f6bff", "#ffcc00", "#00d47e"];
-  const FRACTALS = ["orbits", "whirl"] as const;
-  const POLYGON_SIDES = [3, 5, 6];
-  const DOUBLING_SECONDS = 5;
-  const SPAWNS_PER_DOUBLING = 3;
-  const SPAWN_DISTANCE = 2;
-  const GROWTH = Math.LN2 / DOUBLING_SECONDS;
-  const FRAME_MS = 1000 / 30;
+  // A grid of tiles slides diagonally. Each tile holds two thick quarter arcs joining edge
+  // midpoints, in one of two orientations, so the arcs link into endless winding lines.
+  // Every so often a random tile turns a quarter turn into its other orientation.
+  const DRIFT_SPEED = 18; // px per second, along the diagonal
+  const FLIP_INTERVAL = 0.12; // seconds between flips
+  const FLIP_SECONDS = 0.9;
+  const FRAME_MS = 1000 / 24;
   const GRAIN_TILE = 128;
   const GRAIN_STRENGTH = 24;
-  const MAX_SPEED_BOOST = 5;
-  const CLICK_REACH = 0.3; // share of the screen diagonal
-  const CLICK_FORCE = 1500;
-  // Fractals only recurse while their pieces stay bigger than this, so distant shapes are cheap.
-  const MIN_DETAIL = 4;
 
-  type Point = { x: number; y: number };
-  type Shape = {
-    fractal: (typeof FRACTALS)[number];
-    angle: number;
-    distance: number;
-    radius: number;
-    rotation: number;
-    spin: number;
-    palette: string[];
-    sides: number;
-    branches: number;
-    phase: number;
-    offsetX: number;
-    offsetY: number;
-    velocityX: number;
-    velocityY: number;
-  };
+  type Tile = { orientation: number; flipStart: number }; // orientation 0 or 1
 
   const canvas = document.querySelector<HTMLCanvasElement>("main canvas")!;
   const context = canvas.getContext("2d")!;
-  const origin = { x: 0, y: 0 };
-  const pointer = { x: 0, y: 0, tracked: false, speed: 0 };
-  let speedBoost = 1;
-  let elapsed = 0;
+  const tiles = new Map<string, Tile>();
+  let size = 0;
   let width = 0;
   let height = 0;
-
-  const randomBetween = (min: number, max: number) => min + Math.random() * (max - min);
-  const pick = <T,>(items: readonly T[]) => items[Math.floor(Math.random() * items.length)];
-  const farthest = () => Math.hypot(width, height) * 1.3;
+  let offset = 0;
+  let elapsed = 0;
+  let sinceFlip = 0;
 
   const resize = () => {
     width = canvas.clientWidth;
@@ -93,12 +65,11 @@
     canvas.width = width * devicePixelRatio;
     canvas.height = height * devicePixelRatio;
     context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-    origin.x = -0.05 * width;
-    origin.y = -0.05 * height;
+    size = Math.round(Math.max(48, Math.min(width, height) / 9));
   };
 
-  // Each color is a small tile with faint grain baked in, so grain costs nothing per frame.
-  const createGrainFill = (color: string) => {
+  // Black and white with faint grain baked in, so grain costs nothing per frame.
+  const createGrainFill = (color: string, direction: number) => {
     const tile = document.createElement("canvas");
     tile.width = tile.height = GRAIN_TILE;
     const tileContext = tile.getContext("2d")!;
@@ -106,197 +77,137 @@
     tileContext.fillRect(0, 0, GRAIN_TILE, GRAIN_TILE);
     const pixels = tileContext.getImageData(0, 0, GRAIN_TILE, GRAIN_TILE);
     for (let i = 0; i < pixels.data.length; i += 4) {
-      const shift = (Math.random() - 0.5) * GRAIN_STRENGTH;
+      const shift = Math.random() * GRAIN_STRENGTH * direction;
       for (let channel = 0; channel < 3; channel++) pixels.data[i + channel] += shift;
     }
     tileContext.putImageData(pixels, 0, 0);
     return context.createPattern(tile, "repeat")!;
   };
-  const fills = new Map(COLORS.map((color) => [color, createGrainFill(color)]));
+  const black = createGrainFill("#000", 0.5);
+  const white = createGrainFill("#fff", -1);
 
-  // Fewer shapes along the diagonal that runs through the name, so it stays readable.
-  const randomAngle = () => {
-    const diagonal = Math.atan2(height, width);
-    let angle: number;
-    do {
-      angle = randomBetween(0.05, Math.PI / 2 - 0.05);
-    } while (Math.abs(angle - diagonal) < 0.25 && Math.random() < 0.85);
-    return angle;
+  const tileAt = (column: number, row: number) => {
+    const key = `${column},${row}`;
+    let tile = tiles.get(key);
+    if (!tile) {
+      tile = { orientation: Math.round(Math.random()), flipStart: -Infinity };
+      tiles.set(key, tile);
+    }
+    return tile;
   };
 
-  const spawn = (distance: number): Shape => ({
-    fractal: pick(FRACTALS),
-    angle: randomAngle(),
-    distance,
-    radius: distance * randomBetween(0.1, 0.3),
-    rotation: randomBetween(0, Math.PI * 2),
-    spin: randomBetween(-0.4, 0.4),
-    palette: [...COLORS].sort(() => Math.random() - 0.5).slice(0, 3),
-    sides: pick(POLYGON_SIDES),
-    branches: 3 + Math.floor(Math.random() * 3),
-    phase: randomBetween(0, Math.PI * 2),
-    offsetX: 0,
-    offsetY: 0,
-    velocityX: 0,
-    velocityY: 0,
-  });
+  const ease = (t: number) => t * t * (3 - 2 * t);
+  const flipProgress = (tile: Tile) => Math.min(1, (elapsed - tile.flipStart) / FLIP_SECONDS);
 
-  const centerOf = (shape: Shape) => ({
-    x: origin.x + Math.cos(shape.angle) * shape.distance + shape.offsetX,
-    y: origin.y + Math.sin(shape.angle) * shape.distance + shape.offsetY,
-  });
-
-  const polygonCorners = (x: number, y: number, radius: number, sides: number, rotation: number) =>
-    Array.from({ length: sides }, (_, corner) => {
-      const angle = rotation + (corner * Math.PI * 2) / sides;
-      return { x: x + Math.cos(angle) * radius, y: y + Math.sin(angle) * radius };
+  // Arcs around the top left and bottom right corners. A quarter turn gives the other orientation.
+  const addArcs = (path: Path2D, centerX: number, centerY: number, angle: number) => {
+    const half = size / 2;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const point = (x: number, y: number) => ({
+      x: centerX + x * cos - y * sin,
+      y: centerY + x * sin + y * cos,
     });
-
-  const addPolygon = (path: Path2D, corners: Point[]) => {
-    path.moveTo(corners[0].x, corners[0].y);
-    corners.slice(1).forEach((corner) => path.lineTo(corner.x, corner.y));
-    path.closePath();
+    for (const [cornerX, cornerY, start] of [
+      [-half, -half, 0],
+      [half, half, Math.PI],
+    ]) {
+      const corner = point(cornerX, cornerY);
+      const from = point(cornerX + Math.cos(start) * half, cornerY + Math.sin(start) * half);
+      path.moveTo(from.x, from.y);
+      path.arc(corner.x, corner.y, half, start + angle, start + angle + Math.PI / 2);
+    }
   };
 
-  // One path per depth, filled in order so deeper levels paint over their parents.
-  const fillPaths = (paths: Path2D[], palette: string[]) =>
-    paths.forEach((path, depth) => {
-      context.fillStyle = fills.get(palette[depth % palette.length])!;
-      context.fill(path);
-    });
+  const strokeLines = (path: Path2D) => {
+    context.strokeStyle = white;
+    context.lineWidth = size / 3;
+    context.stroke(path);
+  };
 
-  // A circle holds a ring of touching circles, each holding its own ring. Levels counter-rotate.
-  const drawOrbits = (x: number, y: number, radius: number, shape: Shape) => {
-    const gap = Math.sin(Math.PI / shape.branches);
-    const childScale = gap / (1 + gap);
-    const paths: Path2D[] = [];
-    const ring = (cx: number, cy: number, r: number, level: number) => {
-      (paths[level] ??= new Path2D()).moveTo(cx + r, cy);
-      paths[level].arc(cx, cy, r, 0, Math.PI * 2);
-      const child = r * childScale;
-      if (child < MIN_DETAIL || level >= 3) return;
-      const turn = shape.rotation * (level % 2 === 0 ? 1 : -1.5);
-      for (let i = 0; i < shape.branches; i++) {
-        const angle = turn + (i * Math.PI * 2) / shape.branches;
-        ring(cx + Math.cos(angle) * (r - child), cy + Math.sin(angle) * (r - child), child, level + 1);
+  // Resting tiles are stroked as one path, so lines join across tile edges without seams.
+  // Turning tiles are drawn on top, each clipped to its own square.
+  const render = () => {
+    context.fillStyle = black;
+    context.fillRect(0, 0, width, height);
+    const shift = offset % size;
+    const first = -Math.floor(offset / size) - 1;
+    const resting = new Path2D();
+    const turning: { x: number; y: number; angle: number }[] = [];
+    for (let row = 0; row * size - size < height + size; row++) {
+      for (let column = 0; column * size - size < width + size; column++) {
+        const centerX = column * size - size + shift + size / 2;
+        const centerY = row * size - size + shift + size / 2;
+        const tile = tileAt(first + column, first + row);
+        const progress = flipProgress(tile);
+        if (progress >= 1) {
+          addArcs(resting, centerX, centerY, (tile.orientation * Math.PI) / 2);
+        } else {
+          const angle = ((tile.orientation - 1 + ease(progress)) * Math.PI) / 2;
+          turning.push({ x: centerX, y: centerY, angle });
+        }
       }
-    };
-    ring(x, y, radius, 0);
-    fillPaths(paths, shape.palette);
-  };
-
-  // Each polygon's corners sit partway along its parent's edges. The cut sways, so it whirls.
-  const drawWhirl = (x: number, y: number, radius: number, shape: Shape) => {
-    const cut = 0.15 + 0.1 * Math.sin(elapsed * 0.8 + shape.phase);
-    let corners = polygonCorners(x, y, radius, shape.sides, shape.rotation);
-    const paths: Path2D[] = [];
-    for (let level = 0; level < 16 && Math.hypot(corners[0].x - x, corners[0].y - y) > MIN_DETAIL; level++) {
-      addPolygon((paths[level] = new Path2D()), corners);
-      corners = corners.map((corner, i) => {
-        const next = corners[(i + 1) % corners.length];
-        return { x: corner.x + (next.x - corner.x) * cut, y: corner.y + (next.y - corner.y) * cut };
-      });
     }
-    fillPaths(paths, shape.palette);
-  };
-
-  const drawFractal = { orbits: drawOrbits, whirl: drawWhirl };
-
-  const drawShape = (shape: Shape) => {
-    const { x, y } = centerOf(shape);
-    const radius = shape.radius;
-    if (x + radius < 0 || y + radius < 0 || x - radius > width || y - radius > height) return;
-    drawFractal[shape.fractal](x, y, radius, shape);
-  };
-
-  const render = (shapes: Shape[]) => {
-    context.clearRect(0, 0, width, height);
-    shapes.forEach(drawShape);
-  };
-
-  // A click flings nearby shapes away from it. They keep their new path.
-  const pushAway = (shapes: Shape[], clickX: number, clickY: number) => {
-    const reach = Math.hypot(width, height) * CLICK_REACH;
-    for (const shape of shapes) {
-      const { x, y } = centerOf(shape);
-      const distance = Math.hypot(x - clickX, y - clickY) || 1;
-      if (distance > reach + shape.radius) continue;
-      const force = (1 - distance / (reach + shape.radius)) * CLICK_FORCE;
-      shape.velocityX += ((x - clickX) / distance) * force;
-      shape.velocityY += ((y - clickY) / distance) * force;
+    strokeLines(resting);
+    for (const { x, y, angle } of turning) {
+      context.save();
+      context.beginPath();
+      context.rect(x - size / 2, y - size / 2, size, size);
+      context.clip();
+      context.fillStyle = black;
+      context.fillRect(x - size / 2, y - size / 2, size, size);
+      const path = new Path2D();
+      addArcs(path, x, y, angle);
+      strokeLines(path);
+      context.restore();
     }
   };
 
-  // Moving the cursor speeds the zoom up. It eases back down once the cursor rests.
-  const updateSpeedBoost = (seconds: number) => {
-    const target = 1 + Math.min(pointer.speed / 300, MAX_SPEED_BOOST);
-    speedBoost += (target - speedBoost) * Math.min(1, seconds * 2);
-    pointer.speed *= Math.exp(-4 * seconds);
+  const flipRandomTile = () => {
+    const first = -Math.floor(offset / size) - 1;
+    const column = first + Math.floor(Math.random() * (width / size + 2));
+    const row = first + Math.floor(Math.random() * (height / size + 2));
+    const tile = tileAt(column, row);
+    if (flipProgress(tile) < 1) return;
+    tile.orientation = 1 - tile.orientation;
+    tile.flipStart = elapsed;
   };
 
-  // Shapes stay sorted small to large so bigger, closer shapes paint on top.
-  const advance = (shapes: Shape[], seconds: number) => {
-    updateSpeedBoost(seconds);
+  // Forget tiles that slid off the bottom right.
+  const forgetHiddenTiles = () => {
+    const first = -Math.floor(offset / size) - 1;
+    for (const key of tiles.keys()) {
+      const [column, row] = key.split(",").map(Number);
+      if (column > first + width / size + 4 || row > first + height / size + 4) tiles.delete(key);
+    }
+  };
+
+  const advance = (seconds: number) => {
     elapsed += seconds;
-    const zoomSeconds = seconds * speedBoost;
-    const growth = Math.exp(GROWTH * zoomSeconds);
-    const drag = Math.exp(-3 * seconds);
-    for (const shape of shapes) {
-      shape.distance *= growth;
-      shape.radius *= growth;
-      shape.rotation += shape.spin * seconds;
-      shape.offsetX += shape.velocityX * seconds;
-      shape.offsetY += shape.velocityY * seconds;
-      shape.velocityX *= drag;
-      shape.velocityY *= drag;
+    offset += (DRIFT_SPEED / Math.SQRT2) * seconds;
+    sinceFlip += seconds;
+    while (sinceFlip > FLIP_INTERVAL) {
+      sinceFlip -= FLIP_INTERVAL;
+      flipRandomTile();
     }
-    const remaining = shapes.filter((shape) => {
-      const { x, y } = centerOf(shape);
-      return Math.hypot(x - origin.x, y - origin.y) - shape.radius < farthest();
-    });
-    if (Math.random() < (SPAWNS_PER_DOUBLING / DOUBLING_SECONDS) * zoomSeconds) {
-      remaining.unshift(spawn(SPAWN_DISTANCE));
-    }
-    return remaining;
-  };
-
-  // Starts mid-zoom: shapes spread evenly across every scale the screen can show.
-  const initialShapes = () => {
-    const octaves = Math.log2(farthest() / SPAWN_DISTANCE);
-    return Array.from({ length: Math.round(octaves * SPAWNS_PER_DOUBLING) }, () =>
-      spawn(SPAWN_DISTANCE * 2 ** (Math.random() * octaves)),
-    ).sort((a, b) => a.distance - b.distance);
+    if (tiles.size > 4000) forgetHiddenTiles();
   };
 
   resize();
-  let shapes = initialShapes();
-  render(shapes);
+  render();
   addEventListener("resize", () => {
     resize();
-    render(shapes);
+    render();
   });
 
   if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    let lastMove = performance.now();
-    addEventListener("pointermove", (event) => {
-      const now = performance.now();
-      if (pointer.tracked) {
-        const moved = Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y);
-        const elapsedMove = Math.max((now - lastMove) / 1000, 0.008);
-        pointer.speed = Math.max(pointer.speed, moved / elapsedMove);
-      }
-      Object.assign(pointer, { x: event.clientX, y: event.clientY, tracked: true });
-      lastMove = now;
-    });
-    addEventListener("pointerdown", (event) => pushAway(shapes, event.clientX, event.clientY));
-
     let last = performance.now();
     const frame = (now: number) => {
       requestAnimationFrame(frame);
       if (now - last < FRAME_MS) return;
-      shapes = advance(shapes, Math.min((now - last) / 1000, 0.1));
+      advance(Math.min((now - last) / 1000, 0.1));
       last = now;
-      render(shapes);
+      render();
     };
     requestAnimationFrame(frame);
   }
