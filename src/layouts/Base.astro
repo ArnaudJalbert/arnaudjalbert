@@ -1,0 +1,27 @@
+---
+import { getRelativeLocaleUrl } from "astro:i18n";
+
+interface Props {
+  lang: "en" | "fr";
+}
+
+const { lang } = Astro.props;
+const otherLang = lang === "en" ? "fr" : "en";
+---
+
+<!doctype html>
+<html lang={lang}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arnaud Jalbert</title>
+    <link rel="alternate" hreflang="en" href={new URL(getRelativeLocaleUrl("en"), Astro.site)} />
+    <link rel="alternate" hreflang="fr" href={new URL(getRelativeLocaleUrl("fr"), Astro.site)} />
+  </head>
+  <body>
+    <slot />
+    <a href={getRelativeLocaleUrl(otherLang)} hreflang={otherLang} lang={otherLang}>
+      {otherLang === "fr" ? "Français" : "English"}
+    </a>
+  </body>
+</html>
