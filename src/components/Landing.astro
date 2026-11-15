@@ -6,8 +6,7 @@
 
 <main>
   <canvas aria-hidden="true"></canvas>
-  <div class="halo" aria-hidden="true"><span class="name">Arnaud Jalbert</span></div>
-  <h1 class="name">Arnaud Jalbert</h1>
+  <h1>Arnaud Jalbert</h1>
   <div class="grain" aria-hidden="true"></div>
 </main>
 
@@ -21,42 +20,24 @@
     overflow: hidden;
   }
 
-  /* The heading and its halo copy share every metric, so their letters line up exactly. */
-  .name {
+  /* The name inverts the tiles beneath it: white over black, black over white. Its gray
+     glow is inverted with it, and inverting a black or white tile against mid gray gives
+     the same gray, so the glow reads as a halo that quiets the tiles around the letters.
+     Inside the letters the white fill covers the glow, so the tiles still invert there.
+     One wide, faint glow only: a tight one traces each letter and reads as a ghost copy. */
+  h1 {
+    position: relative;
+    z-index: 1;
     margin: 0;
     padding: 0 1rem;
-    font-family: "Bricolage Grotesque Variable", sans-serif;
     font-size: clamp(3rem, 13vw, 12rem);
     font-weight: 800;
     line-height: 1;
     text-align: center;
-  }
-
-  /* The name inverts the tiles and halo beneath it: white over black, black over white. */
-  h1 {
-    position: relative;
-    z-index: 1;
     color: #fff;
     mix-blend-mode: difference;
-  }
-
-  /* A light gray glow around the letters, with the letters cut out by a mask so the tiles
-     still show through them. Mid gray keeps both the white and the black parts readable. */
-  .halo {
-    position: absolute;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    pointer-events: none;
-    mask-size: 100% 100%;
-  }
-
-  /* On the name copy itself, so em sizes scale with the name. */
-  .halo .name {
-    color: transparent;
     text-shadow:
-      0 0 0.04em rgb(128 128 128 / 0.6),
-      0 0 0.12em rgb(128 128 128 / 0.4);
+      0 0 0.35em rgb(128 128 128 / 0.55);
   }
 
   canvas {
@@ -103,10 +84,7 @@
 <script>
   import { startTruchetField } from "../scripts/truchet/field";
   import { paintGrain } from "../scripts/truchet/grain";
-  import { maskOutText } from "../scripts/truchet/text-mask";
 
-  const name = document.querySelector("main h1")!;
   paintGrain(document.querySelector<HTMLElement>("main .grain")!);
-  maskOutText(document.querySelector<HTMLElement>("main .halo")!, name);
   startTruchetField(document.querySelector<HTMLCanvasElement>("main canvas")!);
 </script>
