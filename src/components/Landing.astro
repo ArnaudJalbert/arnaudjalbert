@@ -41,7 +41,7 @@
   // Every shape grows at the same exponential rate, so the scene zooms forever toward
   // the bottom right while new tiny shapes keep spawning at the origin.
   const COLORS = ["#ff2d55", "#1f6bff", "#ffcc00", "#00d47e"];
-  const FRACTALS = ["sierpinski", "orbits", "whirl"] as const;
+  const FRACTALS = ["orbits", "whirl"] as const;
   const POLYGON_SIDES = [3, 5, 6];
   const DOUBLING_SECONDS = 5;
   const SPAWNS_PER_DOUBLING = 3;
@@ -55,7 +55,6 @@
   const CLICK_FORCE = 1500;
   // Fractals only recurse while their pieces stay bigger than this, so distant shapes are cheap.
   const MIN_DETAIL = 4;
-  const MAX_DEPTH = 5;
 
   type Point = { x: number; y: number };
   type Shape = {
@@ -166,23 +165,6 @@
       context.fill(path);
     });
 
-  // Each triangle splits into three corner triangles. Their scale breathes, opening the gaps.
-  const drawSierpinski = (x: number, y: number, radius: number, shape: Shape) => {
-    const scale = 0.46 + 0.04 * Math.sin(elapsed * 1.2 + shape.phase);
-    let depth = 0;
-    while (depth < MAX_DEPTH && radius * scale ** (depth + 1) > MIN_DETAIL) depth++;
-    const path = new Path2D();
-    const split = (cx: number, cy: number, r: number, level: number) => {
-      const corners = polygonCorners(cx, cy, r, 3, shape.rotation);
-      if (level === 0) return addPolygon(path, corners);
-      for (const corner of corners) {
-        split(corner.x + (cx - corner.x) * scale, corner.y + (cy - corner.y) * scale, r * scale, level - 1);
-      }
-    };
-    split(x, y, radius, depth);
-    fillPaths([path], shape.palette);
-  };
-
   // A circle holds a ring of touching circles, each holding its own ring. Levels counter-rotate.
   const drawOrbits = (x: number, y: number, radius: number, shape: Shape) => {
     const gap = Math.sin(Math.PI / shape.branches);
@@ -218,7 +200,7 @@
     fillPaths(paths, shape.palette);
   };
 
-  const drawFractal = { sierpinski: drawSierpinski, orbits: drawOrbits, whirl: drawWhirl };
+  const drawFractal = { orbits: drawOrbits, whirl: drawWhirl };
 
   const drawShape = (shape: Shape) => {
     const { x, y } = centerOf(shape);
