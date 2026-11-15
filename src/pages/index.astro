@@ -1,7 +1,5 @@
 ---
-import Base from "../layouts/Base.astro";
----
+import { getRelativeLocaleUrl } from "astro:i18n";
 
-<Base lang="en">
-  <h1>Arnaud Jalbert</h1>
-</Base>
+return Astro.redirect(getRelativeLocaleUrl("en"));
+---

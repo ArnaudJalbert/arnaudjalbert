@@ -6,7 +6,7 @@ Source code for my personal website.
 
 ## Development
 
-Built with [Astro](https://astro.build). English lives at `/`, French at `/fr/`.
+Built with [Astro](https://astro.build). English lives at `/en/`, French at `/fr/`. `/` redirects to `/en/`.
 
 ```sh
 npm install

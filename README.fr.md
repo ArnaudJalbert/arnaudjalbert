@@ -6,7 +6,7 @@ Code source de mon site web personnel.
 
 ## Développement
 
-Construit avec [Astro](https://astro.build). L'anglais est à `/`, le français à `/fr/`.
+Construit avec [Astro](https://astro.build). L'anglais est à `/en/`, le français à `/fr/`. `/` redirige vers `/en/`.
 
 ```sh
 npm install
